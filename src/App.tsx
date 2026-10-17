@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
-  ArrowDown, ArrowRight, ArrowUpRight, BarChart3, Bell, Check, CheckCheck,
-  CheckCircle2, ChevronDown, Circle, Clock3, Command, Focus, Headphones,
-  Layers3, ListTodo, Menu, Minus, MoreHorizontal, Pause, Play, Plus,
+  ArrowDown, ArrowRight, ArrowUpRight, Bell, Check, CheckCircle2, ChevronDown,
+  Clock3, Command, Focus, Headphones, Layers3, ListTodo, Menu, MoreHorizontal, Pause, Play, Plus,
   RotateCcw, Sparkles, Target, Timer, TrendingUp, X, Zap,
 } from 'lucide-react'
 
