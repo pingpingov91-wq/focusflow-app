@@ -32,3 +32,13 @@ npm run preview
 - Форма подписки с подтверждением и адаптивная навигация.
 
 Внешние сервисы и ключи API не требуются.
+
+## Публикация на GitHub Pages
+
+При отправке изменений в ветку `main` GitHub Actions автоматически соберёт и опубликует приложение. В настройках репозитория откройте **Settings → Pages** и выберите **GitHub Actions** в разделе **Build and deployment → Source**. После завершения workflow сайт будет доступен по адресу `https://pingpingov91-wq.github.io/focusflow-app/`.
+
+Для проверки сборки с адресами GitHub Pages локально выполните:
+
+```bash
+npm run build -- --mode github-pages
+```
