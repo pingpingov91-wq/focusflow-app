@@ -1,0 +1,35 @@
+name: Вопрос о FocusFlow
+description: Сообщить о проблеме или задать вопрос о приложении
+title: "Вопрос по FocusFlow"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Обращения публикуются открыто. Не указывайте адрес электронной почты, пароли, названия личных списков и задач или другую персональную информацию.
+        Для вопросов об удалении или доступе к данным аккаунта нужна частная почта поддержки, настроенная владельцем сервиса.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Тема обращения
+      options:
+        - Вопрос об использовании
+        - Ошибка в приложении
+        - Предложение улучшения
+        - Другое
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Чем мы можем помочь?
+      description: Не включай конфиденциальные данные или информацию своего аккаунта.
+      placeholder: Опиши вопрос или проблему
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Как повторить проблему?
+      description: Укажи шаги без личных данных. Для общих предложений это поле можно оставить пустым.
+    validations:
+      required: false

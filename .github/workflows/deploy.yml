@@ -30,6 +30,10 @@ jobs:
         run: npm ci
       - name: Build website
         run: npm run build -- --mode github-pages
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPPORT_EMAIL: ${{ vars.VITE_SUPPORT_EMAIL }}
       - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
         with:

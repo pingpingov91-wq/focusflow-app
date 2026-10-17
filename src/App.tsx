@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import type { User } from '@supabase/supabase-js'
 import {
   ArrowDown, ArrowRight, ArrowUpRight, Bell, Check, CheckCircle2, ChevronDown,
   Clock3, Command, Focus, Headphones, Layers3, ListTodo, Menu, MoreHorizontal, Pause, Play, Plus,
-  RotateCcw, Sparkles, Target, Timer, TrendingUp, X, Zap,
+  RotateCcw, Sparkles, Target, Timer, TrendingUp, UserRound, X, Zap,
 } from 'lucide-react'
+import AuthDialog from './components/AuthDialog'
+import LegalDialog, { type LegalDocument } from './components/LegalDialog'
+import { deleteCloudList, deleteCloudTask, insertCloudList, insertCloudTask, loadCloudWorkspace, renameCloudList, updateCloudTask } from './lib/cloudWorkspace'
+import { isSupabaseConfigured, supportEmail, supabase } from './lib/supabase'
+import { demoWorkspace, readWorkspace, saveWorkspace, type Task, type TaskList, type Workspace } from './lib/workspace'
 
-type Priority = 'Высокий' | 'Средний' | 'Низкий'
-type Task = { id: number; title: string; time: string; priority: Priority; done: boolean }
+type Priority = Task['priority']
 type Filter = 'Все' | 'В процессе' | 'Выполненные'
-
-const starterTasks: Task[] = [
-  { id: 1, title: 'Подготовить концепцию нового проекта', time: '09:30', priority: 'Высокий', done: true },
-  { id: 2, title: 'Созвон с командой продукта', time: '11:00', priority: 'Средний', done: false },
-  { id: 3, title: 'Разобрать входящие и ответить на письма', time: '13:30', priority: 'Низкий', done: false },
-  { id: 4, title: 'Доделать дизайн главной страницы', time: '15:00', priority: 'Высокий', done: false },
-]
 
 const week = [
   { day: 'ПН', value: 48 },
@@ -30,52 +28,96 @@ const features = [
   { icon: Layers3, title: 'Планирование без перегрузки', text: 'Соберите важное в одном месте и двигайтесь в комфортном темпе.' },
   { icon: Focus, title: 'Фокус-сессии', text: 'Работайте короткими отрезками и устраивайте паузы вовремя.' },
   { icon: TrendingUp, title: 'Аналитика привычек', text: 'Замечайте свой прогресс, находите ритм и закрепляйте полезное.' },
-  { icon: Zap, title: 'Всё синхронизировано', text: 'Ваши планы под рукой на любом устройстве, когда бы ни понадобились.' },
+  { icon: Zap, title: 'Свои планы на каждом устройстве', text: 'При подключённом аккаунте твои списки и задачи синхронизируются между устройствами.' },
 ]
 
-function readTasks(): Task[] {
-  try {
-    const saved = localStorage.getItem('focusflow-tasks')
-    if (!saved) return starterTasks
-    const parsed: unknown = JSON.parse(saved)
-    if (Array.isArray(parsed) && parsed.every((task) =>
-      typeof task.id === 'number' && typeof task.title === 'string' &&
-      typeof task.time === 'string' && typeof task.done === 'boolean' &&
-      ['Высокий', 'Средний', 'Низкий'].includes(task.priority),
-    )) return parsed as Task[]
-    console.error('Сохранённый список задач FocusFlow имеет неверный формат.')
-    return starterTasks
-  } catch (error) {
-    console.error('Не удалось загрузить задачи FocusFlow из браузера.', error)
-    return starterTasks
-  }
-}
-
 function App() {
-  const [tasks, setTasks] = useState<Task[]>(readTasks)
+  const [workspace, setWorkspace] = useState<Workspace>(readWorkspace)
+  const { tasks, lists, selectedListId } = workspace
+  const selectedList = lists.find((list) => list.id === selectedListId) ?? lists[0]
+  const activeTasks = tasks.filter((task) => task.listId === selectedList?.id)
   const [filter, setFilter] = useState<Filter>('Все')
   const [modalOpen, setModalOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [listModalOpen, setListModalOpen] = useState(false)
+  const [editingList, setEditingList] = useState<TaskList | null>(null)
+  const [authDialogOpen, setAuthDialogOpen] = useState(false)
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
+  const [legalDocument, setLegalDocument] = useState<LegalDocument | null>(null)
+  const [authUser, setAuthUser] = useState<User | null>(null)
+  const [workspaceOwner, setWorkspaceOwner] = useState<string | null>(null)
+  const [loading, setLoading] = useState(isSupabaseConfigured)
+  const [mutationBusy, setMutationBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(25 * 60)
   const [timerRunning, setTimerRunning] = useState(false)
-  const [newsletterEmail, setNewsletterEmail] = useState('')
-  const [subscribed, setSubscribed] = useState(false)
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setLoading(false), 450)
-    return () => window.clearTimeout(timeout)
+    if (!supabase) {
+      setLoading(false)
+      return
+    }
+
+    let active = true
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setAuthUser(session?.user ?? null)
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true)
+        setAuthDialogOpen(true)
+      }
+    })
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      if (error) {
+        console.error('Не удалось восстановить сессию FocusFlow.', error)
+        setNotice('Не удалось проверить аккаунт. Попробуй обновить страницу.')
+        setLoading(false)
+        return
+      }
+      setAuthUser(data.session?.user ?? null)
+    }).catch((error: unknown) => {
+      if (!active) return
+      console.error('Не удалось подключиться к Supabase Auth.', error)
+      setNotice('Не удалось подключиться к службе аккаунтов.')
+      setLoading(false)
+    })
+
+    return () => {
+      active = false
+      subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
-    try {
-      localStorage.setItem('focusflow-tasks', JSON.stringify(tasks))
-    } catch (error) {
-      console.error('Не удалось сохранить задачи FocusFlow.', error)
+    let active = true
+    if (!authUser) {
+      setWorkspaceOwner('demo')
+      setWorkspace(readWorkspace())
+      setLoading(false)
+      return () => { active = false }
     }
-  }, [tasks])
+
+    setWorkspaceOwner(authUser.id)
+    setWorkspace({ lists: [], tasks: [], selectedListId: '' })
+    setLoading(true)
+    void loadCloudWorkspace(authUser).then((cloudWorkspace) => {
+      if (active) setWorkspace(cloudWorkspace)
+    }).catch((error: unknown) => {
+      if (!active) return
+      console.error('Не удалось загрузить списки и задачи аккаунта.', error)
+      setWorkspace({ lists: [], tasks: [], selectedListId: '' })
+      setNotice('Не удалось загрузить облачный план. Проверь настройки базы Supabase.')
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+
+    return () => { active = false }
+  }, [authUser])
+
+  useEffect(() => {
+    if (!authUser && workspaceOwner === 'demo') saveWorkspace(workspace)
+  }, [authUser, workspace, workspaceOwner])
 
   useEffect(() => {
     if (!timerRunning) return
@@ -98,47 +140,152 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [notice])
 
-  const completed = tasks.filter((task) => task.done).length
-  const progress = tasks.length ? Math.round((completed / tasks.length) * 100) : 0
-  const filteredTasks = useMemo(() => tasks.filter((task) => {
+  const completed = activeTasks.filter((task) => task.done).length
+  const progress = activeTasks.length ? Math.round((completed / activeTasks.length) * 100) : 0
+  const filteredTasks = useMemo(() => activeTasks.filter((task) => {
     if (filter === 'В процессе') return !task.done
     if (filter === 'Выполненные') return task.done
     return true
-  }), [tasks, filter])
+  }), [activeTasks, filter])
   const timerDisplay = `${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(secondsLeft % 60).padStart(2, '0')}`
   const timerProgress = (secondsLeft / (25 * 60)) * 100
+  const supportUrl = supportEmail
+    ? `mailto:${supportEmail}`
+    : 'https://github.com/pingpingov91-wq/focusflow-app/issues/new?title=Вопрос%20по%20FocusFlow'
 
   function openNewTask() {
     setEditingTask(null)
     setModalOpen(true)
   }
 
-  function saveTask(event: FormEvent<HTMLFormElement>) {
+  async function saveTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     const title = String(form.get('title') ?? '').trim()
-    if (!title) return
+    if (!title || !selectedList) return
     const time = String(form.get('time') ?? '12:00')
     const priority = String(form.get('priority') ?? 'Средний') as Priority
+    setMutationBusy(true)
     if (editingTask) {
-      setTasks((current) => current.map((task) => task.id === editingTask.id ? { ...task, title, time, priority } : task))
-      setNotice('Задача обновлена')
+      const updatedTask = { ...editingTask, title, time, priority }
+      try {
+        if (authUser) await updateCloudTask(updatedTask)
+        setWorkspace((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === editingTask.id ? updatedTask : task) }))
+        setNotice('Задача обновлена')
+        setModalOpen(false)
+      } catch (error) {
+        console.error('Не удалось сохранить задачу.', error)
+        setNotice('Не удалось сохранить задачу. Попробуй ещё раз.')
+      }
     } else {
-      setTasks((current) => [...current, { id: Date.now(), title, time, priority, done: false }])
-      setNotice('Задача добавлена в ваш план')
+      const task: Task = { id: crypto.randomUUID(), listId: selectedList.id, title, time, priority, done: false }
+      try {
+        if (authUser) await insertCloudTask(authUser, task)
+        setWorkspace((current) => ({ ...current, tasks: [...current.tasks, task] }))
+        setNotice('Задача добавлена в твой список')
+        setModalOpen(false)
+      } catch (error) {
+        console.error('Не удалось добавить задачу.', error)
+        setNotice('Не удалось добавить задачу. Попробуй ещё раз.')
+      }
     }
-    setModalOpen(false)
+    setMutationBusy(false)
+  }
+
+  async function saveList(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const name = String(form.get('name') ?? '').trim()
+    if (!name) return
+    setMutationBusy(true)
+
+    try {
+      if (editingList) {
+        if (authUser) await renameCloudList(editingList.id, name)
+        setWorkspace((current) => ({
+          ...current,
+          lists: current.lists.map((list) => list.id === editingList.id ? { ...list, name } : list),
+        }))
+        setNotice('Название списка обновлено')
+      } else {
+        const localList: TaskList = { id: crypto.randomUUID(), name, position: lists.length }
+        const list = authUser ? await insertCloudList(authUser, name, lists.length) : localList
+        setWorkspace((current) => ({ ...current, lists: [...current.lists, list], selectedListId: list.id }))
+        setFilter('Все')
+        setNotice('Новый список готов')
+      }
+      setListModalOpen(false)
+    } catch (error) {
+      console.error('Не удалось сохранить список FocusFlow.', error)
+      setNotice('Не удалось сохранить список. Попробуй ещё раз.')
+    } finally {
+      setMutationBusy(false)
+    }
+  }
+
+  async function removeList(list: TaskList) {
+    if (lists.length <= 1) {
+      setNotice('Оставь хотя бы один список в своём плане')
+      return
+    }
+    if (!window.confirm(`Удалить список «${list.name}» и все его задачи?`)) return
+    try {
+      if (authUser) await deleteCloudList(list.id)
+      setWorkspace((current) => {
+        const remainingLists = current.lists.filter((item) => item.id !== list.id)
+        return {
+          ...current,
+          lists: remainingLists,
+          tasks: current.tasks.filter((task) => task.listId !== list.id),
+          selectedListId: list.id === current.selectedListId ? remainingLists[0].id : current.selectedListId,
+        }
+      })
+      setFilter('Все')
+      setNotice('Список и его задачи удалены')
+    } catch (error) {
+      console.error('Не удалось удалить список FocusFlow.', error)
+      setNotice('Не удалось удалить список. Попробуй ещё раз.')
+    }
+  }
+
+  async function toggleTask(task: Task) {
+    const updatedTask = { ...task, done: !task.done }
+    setWorkspace((current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? updatedTask : item) }))
+    if (!authUser) return
+    try {
+      await updateCloudTask(updatedTask)
+    } catch (error) {
+      console.error('Не удалось обновить статус задачи.', error)
+      setWorkspace((current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? task : item) }))
+      setNotice('Не удалось синхронизировать задачу. Попробуй ещё раз.')
+    }
+  }
+
+  async function removeTask(task: Task) {
+    if (authUser) {
+      try {
+        await deleteCloudTask(task.id)
+      } catch (error) {
+        console.error('Не удалось удалить задачу.', error)
+        setNotice('Не удалось удалить задачу. Попробуй ещё раз.')
+        return
+      }
+    }
+    setWorkspace((current) => ({ ...current, tasks: current.tasks.filter((item) => item.id !== task.id) }))
+    setNotice('Задача удалена')
+  }
+
+  async function signOut() {
+    if (!supabase) return
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      console.error('Не удалось выйти из аккаунта FocusFlow.', error)
+      setNotice('Не удалось выйти из аккаунта. Попробуй ещё раз.')
+    }
   }
 
   function scrollToDashboard() {
     document.getElementById('dashboard')?.scrollIntoView({ behavior: 'smooth' })
-  }
-
-  function submitNewsletter(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!newsletterEmail.trim()) return
-    setSubscribed(true)
-    setNewsletterEmail('')
   }
 
   return (
@@ -156,9 +303,9 @@ function App() {
             <a href="#features" onClick={() => setMenuOpen(false)}>Возможности</a>
             <a href="#dashboard" onClick={() => setMenuOpen(false)}>Демо</a>
             <a href="#reviews" onClick={() => setMenuOpen(false)}>Отзывы</a>
-            <a href="#pricing" onClick={() => setMenuOpen(false)}>Тарифы</a>
+            <a href="#support" onClick={() => setMenuOpen(false)}>Поддержка</a>
           </nav>
-          <button className="nav-cta" onClick={scrollToDashboard}>Попробовать бесплатно <ArrowRight size={15} /></button>
+          {authUser ? <button className="nav-cta account-button" onClick={() => void signOut()}><UserRound size={14} /> <span className="account-email">{authUser.email}</span><span>Выйти</span></button> : <button className="nav-cta" onClick={() => setAuthDialogOpen(true)}><UserRound size={14} /> Войти / регистрация <ArrowRight size={15} /></button>}
         </div>
       </header>
 
@@ -169,7 +316,7 @@ function App() {
             <h1>Работай с фокусом.<br /><span>Успевай больше.</span></h1>
             <p className="hero-subtitle">Планируй задачи, береги внимание и каждый день замечай, как много ты уже сделал.</p>
             <div className="hero-actions">
-              <button className="button-primary" onClick={scrollToDashboard}>Начать бесплатно <ArrowRight size={17} /></button>
+              <button className="button-primary" onClick={() => setAuthDialogOpen(true)}>Создать свой план <ArrowRight size={17} /></button>
               <button className="button-quiet" onClick={scrollToDashboard}><span className="play-small"><Play size={12} fill="currentColor" /></span> Посмотреть демо</button>
             </div>
             <div className="hero-trust"><div className="avatar-stack"><span>М</span><span>А</span><span>К</span><span>+</span></div><span><strong>2 400+</strong> человек нашли свой фокус</span></div>
@@ -198,10 +345,15 @@ function App() {
           </div>
           <div className="dashboard-grid">
             <div className="panel tasks-panel">
-              <div className="panel-header"><div><div className="panel-kicker">СРЕДА, 18 ИЮНЯ</div><h3>План на сегодня <span className="today-badge">Сегодня</span></h3></div><button className="icon-button" aria-label="Другие действия" onClick={() => setNotice('Ваш план сохраняется автоматически')}><MoreHorizontal size={20} /></button></div>
+              <div className="panel-header"><div><div className="panel-kicker">{authUser ? `АККАУНТ · ${authUser.email}` : 'ДЕМОНСТРАЦИЯ · ТВОЙ ПЛАН'}</div><h3>{selectedList?.name ?? 'Мой план'} <span className="today-badge">Твой список</span></h3></div><button className="icon-button" aria-label="Другие действия" onClick={() => setNotice(authUser ? 'Изменения синхронизируются с твоим аккаунтом' : 'Демо-план сохраняется только в этом браузере')}><MoreHorizontal size={20} /></button></div>
               <div className="day-progress">
-                <div className="day-progress-label"><span>Твой прогресс</span><strong>{completed} <span>/ {tasks.length} задач</span></strong></div>
+                <div className="day-progress-label"><span>Твой прогресс</span><strong>{completed} <span>/ {activeTasks.length} задач</span></strong></div>
                 <div className="day-track"><span style={{ width: `${progress}%` }} /></div>
+              </div>
+              <div className="list-switcher" aria-label="Твои списки">
+                {lists.map((list) => <button key={list.id} className={`list-tab ${selectedListId === list.id ? 'active' : ''}`} aria-pressed={selectedListId === list.id} onClick={() => { setWorkspace((current) => ({ ...current, selectedListId: list.id })); setFilter('Все') }}><ListTodo size={13} />{list.name}<span>{tasks.filter((task) => task.listId === list.id).length}</span></button>)}
+                <button className="create-list-button" onClick={() => { setEditingList(null); setListModalOpen(true) }}><Plus size={14} /> Новый список</button>
+                {selectedList && <button className="manage-list-button" aria-label="Изменить название списка" onClick={() => { setEditingList(selectedList); setListModalOpen(true) }}><Command size={14} /></button>}
               </div>
               <div className="task-toolbar">
                 <div className="filter-tabs" role="tablist" aria-label="Фильтр задач">
@@ -215,17 +367,17 @@ function App() {
                 {loading ? (
                   <div className="loading-state" aria-label="Загрузка задач"><i /><i /><i /></div>
                 ) : filteredTasks.length === 0 ? (
-                  <div className="empty-state"><span><ListTodo size={21} /></span><b>{tasks.length === 0 ? 'Пока нет задач' : 'В этом списке пусто'}</b><p>{tasks.length === 0 ? 'Добавь первую задачу и задай тон своему дню.' : 'Попробуй другой фильтр или добавь новую задачу.'}</p>{tasks.length === 0 && <button className="text-action" onClick={openNewTask}>Добавить задачу <ArrowRight size={14} /></button>}</div>
+                  <div className="empty-state"><span><ListTodo size={21} /></span><b>{activeTasks.length === 0 ? 'Список пока пуст' : 'В этом разделе пусто'}</b><p>{activeTasks.length === 0 ? `Добавь первую задачу в «${selectedList?.name ?? 'свой план'}».` : 'Попробуй другой фильтр или добавь новую задачу.'}</p>{activeTasks.length === 0 && <button className="text-action" onClick={openNewTask}>Добавить задачу <ArrowRight size={14} /></button>}</div>
                 ) : filteredTasks.map((task) => (
                   <div className={`task-row ${task.done ? 'is-done' : ''}`} key={task.id}>
-                    <button className={`task-checkbox ${task.done ? 'is-checked' : ''}`} aria-label={task.done ? 'Вернуть задачу в план' : 'Завершить задачу'} onClick={() => setTasks((current) => current.map((item) => item.id === task.id ? { ...item, done: !item.done } : item))}>{task.done && <Check size={13} />}</button>
+                    <button className={`task-checkbox ${task.done ? 'is-checked' : ''}`} aria-label={task.done ? 'Вернуть задачу в план' : 'Завершить задачу'} onClick={() => void toggleTask(task)}>{task.done && <Check size={13} />}</button>
                     <div className="task-description"><span>{task.title}</span><small><Clock3 size={12} /> {task.time}</small></div>
                     <span className={`priority priority-${task.priority === 'Высокий' ? 'high' : task.priority === 'Средний' ? 'medium' : 'low'}`}><i /> {task.priority}</span>
-                    <div className="task-actions"><button aria-label="Редактировать задачу" onClick={() => { setEditingTask(task); setModalOpen(true) }}><span className="sr-only">Редактировать</span><Command size={14} /></button><button aria-label="Удалить задачу" onClick={() => { setTasks((current) => current.filter((item) => item.id !== task.id)); setNotice('Задача удалена') }}><span className="sr-only">Удалить</span><X size={15} /></button></div>
+                    <div className="task-actions"><button aria-label="Редактировать задачу" onClick={() => { setEditingTask(task); setModalOpen(true) }}><span className="sr-only">Редактировать</span><Command size={14} /></button><button aria-label="Удалить задачу" onClick={() => void removeTask(task)}><span className="sr-only">Удалить</span><X size={15} /></button></div>
                   </div>
                 ))}
               </div>
-              <button className="all-tasks-link" onClick={() => { setFilter('Все'); setNotice(`В твоём плане ${tasks.length} задач`) }}>Все задачи <ArrowRight size={14} /></button>
+              <div className="list-bottom-actions"><button className="all-tasks-link" onClick={() => { setFilter('Все'); setNotice(`В списке «${selectedList?.name ?? 'Мой день'}» ${activeTasks.length} задач`) }}>Все задачи <ArrowRight size={14} /></button>{lists.length > 1 && selectedList && <button className="delete-list-button" onClick={() => void removeList(selectedList)}>Удалить список</button>}</div>
             </div>
 
             <div className="side-panels">
@@ -239,7 +391,7 @@ function App() {
               </div>
               <div className="panel stats-panel">
                 <div className="stats-header"><div><div className="panel-kicker">ТВОЙ ПРОГРЕСС</div><h3>Эта неделя</h3></div><button className="week-select" onClick={() => setNotice('Показана статистика текущей недели')}>Эта неделя <ChevronDown size={13} /></button></div>
-                <div className="stats-total"><strong>18.5</strong><span>часов фокуса <i><TrendingUp size={12} /> 12%</i></span></div>
+                <div className="stats-total"><strong>18.5</strong><span>часов фокуса <i><TrendingUp size={12} /> демо</i></span></div>
                 <div className="week-chart" aria-label="График часов фокуса за неделю">{week.map((item, index) => <div className="chart-column" key={item.day}><div className="chart-bar-wrap"><span className={`chart-bar ${index === 3 ? 'bar-today' : ''}`} style={{ height: `${item.value}%` }} /></div><small className={index === 3 ? 'chart-today' : ''}>{item.day}</small></div>)}</div>
               </div>
             </div>
@@ -259,28 +411,23 @@ function App() {
           </div>
         </section>
 
-        <section className="pricing-section section-wrap" id="pricing">
-          <div className="section-heading centered"><div className="eyebrow"><span className="eyebrow-dot" /> ПРОСТО И ЧЕСТНО</div><h2>Начни бесплатно.<br /><span>Расти в своём темпе.</span></h2><p>Все важные инструменты — уже в бесплатном плане. Никакой карты, никаких обязательств.</p></div>
-          <div className="pricing-cards">
-            <article className="price-card"><div className="plan-name">Для себя</div><h3>Бесплатно</h3><p>Чтобы найти свой ритм и сосредоточиться на главном.</p><button className="plan-button plan-light" onClick={scrollToDashboard}>Начать бесплатно <ArrowRight size={15} /></button><div className="plan-divider" /><ul><li><Check size={15} /> Неограниченные задачи</li><li><Check size={15} /> Фокус-таймер Pomodoro</li><li><Check size={15} /> Статистика за неделю</li><li><Check size={15} /> Синхронизация устройств</li></ul></article>
-            <article className="price-card price-featured"><span className="popular-label"><Sparkles size={12} /> СКОРО</span><div className="plan-name">Для больших планов</div><h3>FocusFlow Pro</h3><p>Больше ясности для тех, кто хочет большего от своего времени.</p><button className="plan-button plan-purple" onClick={() => setNotice('FocusFlow Pro скоро появится. Следи за обновлениями!')}>Скоро появится <ArrowRight size={15} /></button><div className="plan-divider" /><ul><li><Check size={15} /> Всё из бесплатного плана</li><li><Check size={15} /> Умная аналитика привычек</li><li><Check size={15} /> Неограниченные проекты</li><li><Check size={15} /> Персональные темы</li></ul></article>
-          </div>
-        </section>
-
-        <section className="closing-cta section-wrap"><div className="closing-spark"><Sparkles size={20} /></div><h2>Твой следующий хороший день<br />начинается <span>с одного шага.</span></h2><p>Создай бесплатный план и почувствуй разницу уже сегодня.</p><button className="button-primary" onClick={scrollToDashboard}>Начать бесплатно <ArrowRight size={16} /></button><small>Бесплатно навсегда · Без кредитной карты</small></section>
+        <section className="closing-cta section-wrap"><div className="closing-spark"><Sparkles size={20} /></div><h2>Твой следующий хороший день<br />начинается <span>с одного шага.</span></h2><p>Составь собственный план и сосредоточься на главном.</p><button className="button-primary" onClick={() => { setWorkspace((current) => ({ ...current, selectedListId: current.lists[0]?.id ?? demoWorkspace.selectedListId })); scrollToDashboard() }}>Открыть мои списки <ArrowRight size={16} /></button><small>Все инструменты FocusFlow бесплатны</small></section>
       </main>
 
       <footer className="site-footer">
         <div className="section-wrap footer-main">
           <div className="footer-brand-col"><a className="brand" href="#home"><span className="brand-mark"><Focus size={20} strokeWidth={2.4} /></span><span>focus<span className="brand-light">flow</span></span></a><p>Чуть меньше спешки.<br />Чуть больше того, что важно.</p><div className="social-links"><a href="https://t.me/" aria-label="Telegram">tg</a><a href="https://instagram.com/" aria-label="Instagram">in</a><a href="https://linkedin.com/" aria-label="LinkedIn">li</a></div></div>
-          <div className="footer-nav-col"><b>Продукт</b><a href="#features">Возможности</a><a href="#dashboard">Как это работает</a><a href="#pricing">Тарифы</a><a href="#reviews">Отзывы</a></div>
-          <div className="footer-nav-col"><b>Компания</b><a href="#home">О нас</a><a href="mailto:hello@focusflow.app">Контакты</a><a href="mailto:hello@focusflow.app">Поддержка</a></div>
-          <div className="footer-news"><b>Немного фокуса в почту</b><p>Письма о продуктивности. Редко и по делу.</p><form onSubmit={submitNewsletter}><input type="email" required placeholder="Твоя почта" aria-label="Электронная почта" value={newsletterEmail} onChange={(event) => setNewsletterEmail(event.target.value)} /><button aria-label="Подписаться" type="submit"><ArrowRight size={16} /></button></form>{subscribed && <small className="subscribe-success"><Check size={13} /> Ты в списке! Скоро напишем.</small>}</div>
+          <div className="footer-nav-col"><b>Продукт</b><a href="#features">Возможности</a><a href="#dashboard">Как это работает</a><a href="#reviews">Отзывы</a><button className="footer-legal" onClick={() => setAuthDialogOpen(true)}>Войти / регистрация</button></div>
+          <div className="footer-nav-col"><b>Правовая информация</b><button className="footer-legal" onClick={() => setLegalDocument('terms')}>Пользовательское соглашение</button><button className="footer-legal" onClick={() => setLegalDocument('privacy')}>Конфиденциальность</button></div>
+          <div className="footer-news" id="support"><b>Поддержка FocusFlow</b><p>Демо и собственные списки бесплатны. По вопросам работы сервиса свяжись с поддержкой.</p><a className="support-link" href={supportUrl} target={supportEmail ? undefined : '_blank'} rel={supportEmail ? undefined : 'noreferrer'}>{supportEmail ? 'Написать в службу поддержки' : 'Создать обращение на GitHub'} <ArrowUpRight size={15} /></a>{!supportEmail && <small className="support-note">Обращение будет видно публично. Не отправляй пароли и личные данные.</small>}</div>
         </div>
-        <div className="section-wrap footer-bottom"><span>© 2025 FocusFlow. Сделано с заботой о твоём времени.</span><div><a href="mailto:hello@focusflow.app?subject=Политика%20конфиденциальности">Конфиденциальность</a><a href="mailto:hello@focusflow.app?subject=Условия%20использования">Условия использования</a><a href="#home"><Bell size={13} /> RU</a></div></div>
+        <div className="section-wrap footer-bottom"><span>© 2026 FocusFlow. Сделано с заботой о твоём времени.</span><div><button onClick={() => setLegalDocument('privacy')}>Конфиденциальность</button><button onClick={() => setLegalDocument('terms')}>Условия использования</button><a href="#home"><Bell size={13} /> RU</a></div></div>
       </footer>
 
-      {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><form className="task-modal" onSubmit={saveTask} aria-labelledby="modal-title"><div className="modal-heading"><span className="modal-icon"><ListTodo size={18} /></span><button className="modal-close" type="button" onClick={() => setModalOpen(false)} aria-label="Закрыть"><X size={18} /></button></div><h3 id="modal-title">{editingTask ? 'Изменить задачу' : 'Новая задача'}</h3><p>Добавь важное — остальное подождёт.</p><label htmlFor="task-title">Название задачи</label><input id="task-title" name="title" required maxLength={100} placeholder="Например, подготовить презентацию" defaultValue={editingTask?.title ?? ''} autoFocus /><div className="modal-fields"><div><label htmlFor="task-time">Время</label><input id="task-time" name="time" type="time" defaultValue={editingTask?.time ?? '12:00'} /></div><div><label htmlFor="task-priority">Приоритет</label><select id="task-priority" name="priority" defaultValue={editingTask?.priority ?? 'Средний'}><option>Высокий</option><option>Средний</option><option>Низкий</option></select></div></div><button className="button-primary modal-submit" type="submit">{editingTask ? 'Сохранить изменения' : 'Добавить задачу'} <ArrowRight size={16} /></button></form></div>}
+      {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !mutationBusy) setModalOpen(false) }}><form className="task-modal" onSubmit={(event) => void saveTask(event)} aria-labelledby="modal-title"><div className="modal-heading"><span className="modal-icon"><ListTodo size={18} /></span><button className="modal-close" type="button" onClick={() => setModalOpen(false)} aria-label="Закрыть"><X size={18} /></button></div><h3 id="modal-title">{editingTask ? 'Изменить задачу' : 'Новая задача'}</h3><p>Добавь важное в список «{selectedList?.name ?? 'Мой день'}».</p><label htmlFor="task-title">Название задачи</label><input id="task-title" name="title" required maxLength={100} placeholder="Например, подготовить презентацию" defaultValue={editingTask?.title ?? ''} autoFocus /><div className="modal-fields"><div><label htmlFor="task-time">Время</label><input id="task-time" name="time" type="time" defaultValue={editingTask?.time ?? '12:00'} /></div><div><label htmlFor="task-priority">Приоритет</label><select id="task-priority" name="priority" defaultValue={editingTask?.priority ?? 'Средний'}><option>Высокий</option><option>Средний</option><option>Низкий</option></select></div></div><button className="button-primary modal-submit" type="submit" disabled={mutationBusy}>{mutationBusy ? 'Сохраняю…' : editingTask ? 'Сохранить изменения' : 'Добавить задачу'} <ArrowRight size={16} /></button></form></div>}
+      {listModalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !mutationBusy) setListModalOpen(false) }}><form className="task-modal" onSubmit={(event) => void saveList(event)} aria-labelledby="list-modal-title"><div className="modal-heading"><span className="modal-icon"><Layers3 size={18} /></span><button className="modal-close" type="button" onClick={() => setListModalOpen(false)} aria-label="Закрыть"><X size={18} /></button></div><h3 id="list-modal-title">{editingList ? 'Переименовать список' : 'Новый список'}</h3><p>{editingList ? 'Измени название своего плана.' : 'Раздели задачи так, как удобно именно тебе.'}</p><label htmlFor="list-name">Название списка</label><input id="list-name" name="name" required maxLength={60} placeholder="Например, Учёба или Мой проект" defaultValue={editingList?.name ?? ''} autoFocus /><button className="button-primary modal-submit" type="submit" disabled={mutationBusy}>{mutationBusy ? 'Сохраняю…' : editingList ? 'Сохранить название' : 'Создать список'} <ArrowRight size={16} /></button></form></div>}
+      {authDialogOpen && <AuthDialog initialMode={passwordRecovery ? 'update-password' : undefined} onClose={() => { setAuthDialogOpen(false); setPasswordRecovery(false) }} onOpenLegal={setLegalDocument} onSuccess={setNotice} />}
+      {legalDocument && <LegalDialog document={legalDocument} onChange={setLegalDocument} onClose={() => setLegalDocument(null)} supportEmail={supportEmail} />}
       {notice && <div className="toast" role="status"><span><Check size={14} /></span>{notice}<button aria-label="Закрыть уведомление" onClick={() => setNotice('')}><X size={14} /></button></div>}
     </>
   )
